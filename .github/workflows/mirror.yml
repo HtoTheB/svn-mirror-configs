@@ -1,0 +1,84 @@
+name: Automatically keep selected SVN mirror repos up to date, using the SVN-replicator tool
+
+on:
+  workflow_dispatch:
+    # Defines the input fields for manual execution
+    inputs:
+      do_push:
+        description: 'Push changes to the target repository (Overwrite remote)'
+        required: true
+        type: boolean
+        default: false # Default is false for safe testing
+
+jobs:
+  run-mirror:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        config_file: 
+          - svn-sample-repo.yml
+
+    steps:
+
+      - name: Install Subversion
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y subversion
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Checkout SVN mirroring configs repo # This repo
+        uses: actions/checkout@v4
+        with:
+          path: mirror-configs
+      - name: Checkout SVN replicator repo
+        uses: actions/checkout@v4
+        with:
+          repository: HtoTheB/svn-replicator 
+          path: svn-replicator
+      
+      - name: Copy specific config to the replicator tool
+        run: |
+          cp \
+            mirror-configs/configs/${{ matrix.config_file }} \
+            svn-replicator/config.yml
+
+      - name: Execute the SVN replicator tool 
+        working-directory: ./svn-replicator
+        run: |
+          uv sync
+          python3 ./src/main.py
+
+      # This step only runs if the box was checked
+      - name: Optional Force-Push to target repository
+        if: ${{ inputs.do_push == true }}
+        working-directory: ./svn-replicator/.localWCs/git
+        env:
+          GITHUB_TOKEN: ${{ secrets.MIRROR_PUSH_TOKEN }} 
+        run: |
+          # 1. Read the target URL directly from the YAML config
+          # Because we are in .localWCs/git, the config is two directories up
+          TARGET_REPO=$(yq '.git.remoteURL' ../../config.yml)
+          
+          # Remove 'https://' from the URL to build the authenticated string
+          TARGET_REPO=$(echo $TARGET_REPO | sed 's/https:\/\///')
+          
+          # 2. Build the secure push URL with the token
+          REMOTE_URL="https://x-access-token:${GITHUB_TOKEN}@${TARGET_REPO}"
+          
+          # 3. Add the target remote
+          git remote add target "$REMOTE_URL"
+          
+          # 4. Perform the radical mirror push (force push, all branches, all tags)
+          git push target --mirror
+
+      - name: Upload git repo as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: konvertiertes-git-repo
+          path: ./svn-replicator/.localWCs/git
+          include-hidden-files: true # Extrem wichtig, damit der unsichtbare .git Ordner mitkommt!
+          retention-days: 1 # Löscht das ZIP nach einem Tag automatisch, um Speicherplatz zu sparen
