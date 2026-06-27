@@ -28,7 +28,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
-          enable-cache: true
+          enable-cache: false
 
       - name: Checkout SVN mirroring configs repo # This repo
         uses: actions/checkout@v4
@@ -49,8 +49,7 @@ jobs:
       - name: Execute the SVN replicator tool 
         working-directory: ./svn-replicator
         run: |
-          uv sync
-          python3 ./src/main.py
+          uv run ./src/main.py
 
       # This step only runs if the box was checked
       - name: Optional Force-Push to target repository
