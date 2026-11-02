@@ -122,25 +122,32 @@ jobs:
       # Pushes when the manual checkbox is ticked, or on schedule runs
       # (where inputs.do_push is undefined). Skips itself if the config's
       # git.remoteUrl is still empty.
+      # Auth is a deploy key over SSH: the push is attributed to the key, not
+      # to any user account, so it never lands in a person's activity feed.
+      # (Commit-level attribution is separate and already handled: the
+      # replicator sets each commit's author/committer to the original SVN
+      # author, so mirror commits never hit the contribution graph either.)
+      - name: Set up SSH agent with the deploy key
+        if: inputs.do_push != false
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.MIRROR_PUSH_KEY }}
+
       - name: Push to target repository
         if: inputs.do_push != false
         working-directory: ./svn-replicator
-        env:
-          GITHUB_TOKEN: ${{ secrets.MIRROR_PUSH_TOKEN }} 
         run: |
-          # 1. Read the target URL directly from the YAML config
-          # (owner/repo form, e.g. "HtoTheB/tcnopen-trdp")
+          # 1. Read the target repo directly from the YAML config
+          # (owner/repo form, e.g. "HtoTheB/TCNOpen-Mirror")
           TARGET_REPO=$(uv run --no-project --with pyyaml python -c \
             "import yaml; print(yaml.safe_load(open('config.yml')).get('git', {}).get('remoteUrl', ''))")
           if [ -z "$TARGET_REPO" ]; then
             echo "::notice::git.remoteUrl is empty in config.yml - skipping push."
             exit 0
           fi
-          # 2. Build the secure push URL with the token
-          REMOTE_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${TARGET_REPO}"
-          # 3. Add the target remote
-          git -C .localWCs/git remote add target "$REMOTE_URL"
-          # 4. Perform the radical mirror push (force push, all branches, all tags)
+          # 2. Add the target remote over SSH (the deploy key handles auth)
+          git -C .localWCs/git remote add target "git@github.com:${TARGET_REPO}.git"
+          # 3. Perform the radical mirror push (force push, all branches, all tags)
           git -C .localWCs/git push target --mirror
 
       - name: Upload git repo as artifact

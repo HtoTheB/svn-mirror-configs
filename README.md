@@ -17,4 +17,8 @@ The remaining keys (`skipRevisions`, folder layout, `keepDeleted*`, working dire
 
 ## Push access
 
-The push step authenticates with the repository secret `MIRROR_PUSH_TOKEN` — a fine-grained token (or PAT) with **Contents: Read and write** on the target repository. Without the secret, scheduled runs only produce the mirror as a job artifact.
+The push step authenticates with a **deploy key** over SSH. The private key is stored in the repository secret `MIRROR_PUSH_KEY`; the matching public key is added on the target repository (`TCNOpen-Mirror` → Settings → Deploy keys → Add deploy key) with **write access** enabled. Using a deploy key (rather than a personal token) means pushes are attributed to the key instead of to any user account, so they never appear in a person's activity feed.
+
+Commit-level attribution is handled separately by the replicator: it sets every commit's author/committer to the original SVN author, so mirror commits never show up in anyone's contribution graph.
+
+Without the secret, scheduled runs only produce the mirror as a job artifact.
