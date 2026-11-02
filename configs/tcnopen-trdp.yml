@@ -1,0 +1,22 @@
+svn:
+  remoteURI: "https://svn.code.sf.net/p/tcnopen/trdp/" # Fallback: used as-is when no rsyncURI is set
+  rsyncURI: "svn.code.sf.net::p/tcnopen/trdp" # If set, the workflow rsyncs the raw repo locally and rewrites remoteURI to file://
+
+  skipRevisions: []
+  trunkFolder: "/trunk/"
+  branchFolder: "/branches/"
+  tagFolder: "/tags/"
+  ignoredFolders: []
+
+git:
+  commitMsgPrefix: true # Add revision number to commit message ("r1234: {text}")
+  keepDeletedBranches: false
+  keepDeletedTags: false
+  remoteUrl: "HtoTheB/TCNOpen-Mirror" # Target git repo in owner/repo form
+
+localFiles:
+  svnWorkingDir: ".localWCs/svn"
+  gitWorkingDir: ".localWCs/git"
+
+logging:
+  level: "INFO"
