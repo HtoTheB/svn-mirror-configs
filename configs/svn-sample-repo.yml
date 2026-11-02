@@ -9,7 +9,7 @@ svn:
 
 git:
   commitMsgPrefix: true # Add revision number to commit message ("r1234: {text}")
-  remoteUrl: ""
+  remoteUrl: "" # Target git repo in owner/repo form (e.g. "HtoTheB/my-repo"); push is skipped while empty
 
 localFiles:
   svnWorkingDir: ".localWCs/svn"

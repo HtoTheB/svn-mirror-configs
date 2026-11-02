@@ -1,6 +1,10 @@
 name: Automatically keep selected SVN mirror repos up to date, using the SVN-replicator tool
 
 on:
+  schedule:
+    # Runs once a day at 06:00 UTC. On schedule runs, inputs.do_push is
+    # undefined, which is treated as "push" (see the push step below).
+    - cron: '0 6 * * *'
   workflow_dispatch:
     # Defines the input fields for manual execution
     inputs:
@@ -8,23 +12,25 @@ on:
         description: 'Push changes to the target repository (Overwrite remote)'
         required: true
         type: boolean
-        default: false # Default is false for safe testing
+        default: false # Manual runs default to no push for safe testing
 
 jobs:
   run-mirror:
-    runs-on: ubuntu-slim
+    # ubuntu-latest (4 vCPU, 6h job cap): the conversion pass over ~2500
+    # revisions is CPU-bound, and public repos get standard runners free.
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         config_file: 
-          - svn-sample-repo.yml
+          - tcnopen-trdp.yml
 
     steps:
 
-      - name: Install Subversion
+      - name: Install Subversion and rsync
         run: |
           sudo apt-get update
-          sudo apt-get install -y subversion
+          sudo apt-get install -y subversion rsync
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
@@ -39,40 +45,103 @@ jobs:
         with:
           repository: HtoTheB/svn-replicator 
           path: svn-replicator
-      
+       
       - name: Copy specific config to the replicator tool
         run: |
           cp \
             mirror-configs/configs/${{ matrix.config_file }} \
             svn-replicator/config.yml
 
+      # If the config defines an rsyncURI (SourceForge read-only rsync access
+      # to the raw repository), we sync the whole repo to the local disk and
+      # point the replicator at it via a file:// URL. This is dramatically
+      # faster than letting the replicator pull every revision over HTTP.
+      # Without an rsyncURI, nothing changes: the remoteURI is used as-is.
+      - name: Read rsyncURI from config
+        id: svn_source
+        working-directory: ./svn-replicator
+        run: |
+          RSYNC_URI=$(grep -E '^[[:space:]]*rsyncURI:' config.yml \
+            | head -n1 \
+            | sed -E 's/^[[:space:]]*rsyncURI:[[:space:]]*//; s/[[:space:]]*#.*$//; s/^["'\'']//; s/["'\'']$//')
+          echo "rsync_uri=${RSYNC_URI}" >> "$GITHUB_OUTPUT"
+          echo "rsyncURI: ${RSYNC_URI:-<none>}"
+
+      - name: Cache raw SVN repository
+        if: steps.svn_source.outputs.rsync_uri != ''
+        uses: actions/cache@v4
+        with:
+          # Keyed per config file (one config file = one repo). A cache hit
+          # only makes the next rsync cheaper; rsync --delete converges the
+          # copy to the remote state either way, so a stale cache can never
+          # produce a wrong mirror.
+          path: svn-repo
+          key: svn-repo-${{ matrix.config_file }}-v1
+
+      - name: Rsync raw SVN repository to local disk
+        if: steps.svn_source.outputs.rsync_uri != ''
+        working-directory: ./svn-replicator
+        run: |
+          REPO_DIR="$GITHUB_WORKSPACE/svn-repo"
+          mkdir -p "$REPO_DIR"
+          # --delete keeps the local copy an exact replica; unchanged
+          # revisions are skipped (size + mtime comparison), so a warm
+          # cache only transfers new revisions.
+          rsync -a --delete "${{ steps.svn_source.outputs.rsync_uri }}" "$REPO_DIR/"
+          # Make sure the synced copy is a valid repository before use
+          # (verify prints one line per revision - only show on failure)
+          if ! svnadmin verify "$REPO_DIR" > /tmp/svnadmin-verify.log 2>&1; then
+            cat /tmp/svnadmin-verify.log
+            exit 1
+          fi
+          echo "svnadmin verify: OK"
+          REMOTE_REV=$(svnadmin info "$REPO_DIR" | awk -F': ' '/^Revisions:/ {print $2}')
+          echo "Synced raw SVN repo to $REPO_DIR (HEAD = r${REMOTE_REV})"
+
+      - name: Point remoteURI at the local copy
+        if: steps.svn_source.outputs.rsync_uri != ''
+        working-directory: ./svn-replicator
+        run: |
+          # Uses PyYAML (pinned dep of the replicator) instead of yq, which
+          # is not preinstalled on ubuntu-slim.
+          uv run --no-project --with pyyaml python - <<EOF
+          import yaml
+          from pathlib import Path
+          p = Path("config.yml")
+          cfg = yaml.safe_load(p.read_text())
+          cfg["svn"]["remoteURI"] = "file://" + str(Path("$GITHUB_WORKSPACE/svn-repo").resolve())
+          p.write_text(yaml.safe_dump(cfg, sort_keys=False))
+          print("remoteURI ->", cfg["svn"]["remoteURI"])
+          EOF
+
       - name: Execute the SVN replicator tool 
         working-directory: ./svn-replicator
         run: |
           uv run ./src/main.py
 
-      # This step only runs if the box was checked
-      - name: Optional Force-Push to target repository
-        if: ${{ inputs.do_push == true }}
-        working-directory: ./svn-replicator/.localWCs/git
+      # Pushes when the manual checkbox is ticked, or on schedule runs
+      # (where inputs.do_push is undefined). Skips itself if the config's
+      # git.remoteUrl is still empty.
+      - name: Push to target repository
+        if: inputs.do_push != false
+        working-directory: ./svn-replicator
         env:
           GITHUB_TOKEN: ${{ secrets.MIRROR_PUSH_TOKEN }} 
         run: |
           # 1. Read the target URL directly from the YAML config
-          # Because we are in .localWCs/git, the config is two directories up
-          TARGET_REPO=$(yq '.git.remoteURL' ../../config.yml)
-          
-          # Remove 'https://' from the URL to build the authenticated string
-          TARGET_REPO=$(echo $TARGET_REPO | sed 's/https:\/\///')
-          
+          # (owner/repo form, e.g. "HtoTheB/tcnopen-trdp")
+          TARGET_REPO=$(uv run --no-project --with pyyaml python -c \
+            "import yaml; print(yaml.safe_load(open('config.yml')).get('git', {}).get('remoteUrl', ''))")
+          if [ -z "$TARGET_REPO" ]; then
+            echo "::notice::git.remoteUrl is empty in config.yml - skipping push."
+            exit 0
+          fi
           # 2. Build the secure push URL with the token
-          REMOTE_URL="https://x-access-token:${GITHUB_TOKEN}@${TARGET_REPO}"
-          
+          REMOTE_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${TARGET_REPO}"
           # 3. Add the target remote
-          git remote add target "$REMOTE_URL"
-          
+          git -C .localWCs/git remote add target "$REMOTE_URL"
           # 4. Perform the radical mirror push (force push, all branches, all tags)
-          git push target --mirror
+          git -C .localWCs/git push target --mirror
 
       - name: Upload git repo as artifact
         uses: actions/upload-artifact@v4
