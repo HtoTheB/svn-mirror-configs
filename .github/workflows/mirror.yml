@@ -2,8 +2,8 @@ name: Automatically keep selected SVN mirror repos up to date, using the SVN-rep
 
 on:
   schedule:
-    # Runs once a day at 06:00 UTC. On schedule runs, inputs.do_push is
-    # undefined, which is treated as "push" (see the push step below).
+    # Runs once a day at 06:00 UTC. Scheduled runs always push (see the push
+    # steps below); manual runs only push when the box is ticked.
     - cron: '0 6 * * *'
   workflow_dispatch:
     # Defines the input fields for manual execution
@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        config_file: 
+        config_file:
           - tcnopen-trdp.yml
 
     steps:
@@ -45,7 +45,7 @@ jobs:
         with:
           repository: HtoTheB/svn-replicator 
           path: svn-replicator
-       
+
       - name: Copy specific config to the replicator tool
         run: |
           cp \
@@ -61,9 +61,9 @@ jobs:
         id: svn_source
         working-directory: ./svn-replicator
         run: |
-          RSYNC_URI=$(grep -E '^[[:space:]]*rsyncURI:' config.yml \
-            | head -n1 \
-            | sed -E 's/^[[:space:]]*rsyncURI:[[:space:]]*//; s/[[:space:]]*#.*$//; s/^["'\'']//; s/["'\'']$//')
+          # YAML-aware extraction (rsyncURI is an optional, workflow-only key)
+          RSYNC_URI=$(uv run --no-project --with pyyaml python -c \
+            "import yaml; print((yaml.safe_load(open('config.yml')).get('svn', {}) or {}).get('rsyncURI', '') or '')")
           echo "rsync_uri=${RSYNC_URI}" >> "$GITHUB_OUTPUT"
           echo "rsyncURI: ${RSYNC_URI:-<none>}"
 
@@ -71,12 +71,15 @@ jobs:
         if: steps.svn_source.outputs.rsync_uri != ''
         uses: actions/cache@v4
         with:
-          # Keyed per config file (one config file = one repo). A cache hit
-          # only makes the next rsync cheaper; rsync --delete converges the
-          # copy to the remote state either way, so a stale cache can never
-          # produce a wrong mirror.
+          # Save a fresh snapshot under a per-run key and restore the newest
+          # one for this config. A fixed key would never advance: GitHub
+          # cache entries are immutable, so saving to an existing key is
+          # ignored. rsync --delete converges the copy to the remote state
+          # either way, so a stale cache can never produce a wrong mirror.
           path: svn-repo
-          key: svn-repo-${{ matrix.config_file }}-v1
+          key: svn-repo-${{ matrix.config_file }}-${{ github.run_id }}
+          restore-keys: |
+            svn-repo-${{ matrix.config_file }}-
 
       - name: Rsync raw SVN repository to local disk
         if: steps.svn_source.outputs.rsync_uri != ''
@@ -84,10 +87,12 @@ jobs:
         run: |
           REPO_DIR="$GITHUB_WORKSPACE/svn-repo"
           mkdir -p "$REPO_DIR"
-          # --delete keeps the local copy an exact replica; unchanged
-          # revisions are skipped (size + mtime comparison), so a warm
-          # cache only transfers new revisions.
-          rsync -a --delete "${{ steps.svn_source.outputs.rsync_uri }}" "$REPO_DIR/"
+          # The trailing slash syncs the *contents* of the module into
+          # REPO_DIR; without it, rsync would nest everything under
+          # REPO_DIR/<module name>/. --delete keeps the local copy an exact
+          # replica; unchanged revisions are skipped (size + mtime
+          # comparison), so a warm cache only transfers new revisions.
+          rsync -a --delete "${{ steps.svn_source.outputs.rsync_uri }}/" "$REPO_DIR/"
           # Make sure the synced copy is a valid repository before use
           # (verify prints one line per revision - only show on failure)
           if ! svnadmin verify "$REPO_DIR" > /tmp/svnadmin-verify.log 2>&1; then
@@ -95,15 +100,32 @@ jobs:
             exit 1
           fi
           echo "svnadmin verify: OK"
-          REMOTE_REV=$(svnadmin info "$REPO_DIR" | awk -F': ' '/^Revisions:/ {print $2}')
-          echo "Synced raw SVN repo to $REPO_DIR (HEAD = r${REMOTE_REV})"
+          # Guard against a lagging snapshot: if the source has moved on
+          # since the rsync ran, --mirror would delete the refs we are
+          # missing. Fail closed; the next run (or a re-run) catches up.
+          SYNCED_REV=$(svnlook youngest "$REPO_DIR")
+          LIVE_URL=$(uv run --no-project --with pyyaml python -c \
+            "import yaml; print((yaml.safe_load(open('config.yml')).get('svn', {}) or {}).get('remoteURI', ''))")
+          if [ -z "$LIVE_URL" ]; then
+            echo "::error::svn.remoteURI is empty in config.yml - cannot verify the snapshot."
+            exit 1
+          fi
+          if ! LIVE_REV=$(svn info --non-interactive --show-item last-changed-revision "$LIVE_URL" 2>&1); then
+            echo "::error::Could not determine the live HEAD of $LIVE_URL: $LIVE_REV"
+            exit 1
+          fi
+          echo "Synced raw SVN repo to $REPO_DIR (synced = r${SYNCED_REV}, live = r${LIVE_REV})"
+          if [ "$SYNCED_REV" != "$LIVE_REV" ]; then
+            echo "::error::Synced snapshot (r${SYNCED_REV}) is behind the live repository (r${LIVE_REV}). The SourceForge rsync snapshot may be lagging - re-run the workflow."
+            exit 1
+          fi
 
       - name: Point remoteURI at the local copy
         if: steps.svn_source.outputs.rsync_uri != ''
         working-directory: ./svn-replicator
         run: |
           # Uses PyYAML (pinned dep of the replicator) instead of yq, which
-          # is not preinstalled on ubuntu-slim.
+          # is not preinstalled on slim runners.
           uv run --no-project --with pyyaml python - <<EOF
           import yaml
           from pathlib import Path
@@ -119,22 +141,32 @@ jobs:
         run: |
           uv run ./src/main.py
 
-      # Pushes when the manual checkbox is ticked, or on schedule runs
-      # (where inputs.do_push is undefined). Skips itself if the config's
-      # git.remoteUrl is still empty.
+      # Pushes always on schedule runs, and on manual runs when the box is
+      # ticked. Skips itself if the config's git.remoteUrl is still empty.
       # Auth is a deploy key over SSH: the push is attributed to the key, not
       # to any user account, so it never lands in a person's activity feed.
       # (Commit-level attribution is separate and already handled: the
       # replicator sets each commit's author/committer to the original SVN
       # author, so mirror commits never hit the contribution graph either.)
+      - name: Check push prerequisites
+        if: github.event_name == 'schedule' || inputs.do_push == true
+        env:
+          MIRROR_PUSH_KEY: ${{ secrets.MIRROR_PUSH_KEY }}
+        run: |
+          if [ -z "$MIRROR_PUSH_KEY" ]; then
+            echo "::error::Push is enabled, but the MIRROR_PUSH_KEY secret is missing or empty. Add the deploy key under this repo's Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          echo "MIRROR_PUSH_KEY present"
+
       - name: Set up SSH agent with the deploy key
-        if: inputs.do_push != false
+        if: github.event_name == 'schedule' || inputs.do_push == true
         uses: webfactory/ssh-agent@v0.9.1
         with:
           ssh-private-key: ${{ secrets.MIRROR_PUSH_KEY }}
 
       - name: Push to target repository
-        if: inputs.do_push != false
+        if: github.event_name == 'schedule' || inputs.do_push == true
         working-directory: ./svn-replicator
         run: |
           # 1. Read the target repo directly from the YAML config
