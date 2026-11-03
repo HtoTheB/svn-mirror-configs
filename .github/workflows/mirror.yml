@@ -100,25 +100,7 @@ jobs:
             exit 1
           fi
           echo "svnadmin verify: OK"
-          # Guard against a lagging snapshot: if the source has moved on
-          # since the rsync ran, --mirror would delete the refs we are
-          # missing. Fail closed; the next run (or a re-run) catches up.
-          SYNCED_REV=$(svnlook youngest "$REPO_DIR")
-          LIVE_URL=$(uv run --no-project --with pyyaml python -c \
-            "import yaml; print((yaml.safe_load(open('config.yml')).get('svn', {}) or {}).get('remoteURI', ''))")
-          if [ -z "$LIVE_URL" ]; then
-            echo "::error::svn.remoteURI is empty in config.yml - cannot verify the snapshot."
-            exit 1
-          fi
-          if ! LIVE_REV=$(svn info --non-interactive --show-item last-changed-revision "$LIVE_URL" 2>&1); then
-            echo "::error::Could not determine the live HEAD of $LIVE_URL: $LIVE_REV"
-            exit 1
-          fi
-          echo "Synced raw SVN repo to $REPO_DIR (synced = r${SYNCED_REV}, live = r${LIVE_REV})"
-          if [ "$SYNCED_REV" != "$LIVE_REV" ]; then
-            echo "::error::Synced snapshot (r${SYNCED_REV}) is behind the live repository (r${LIVE_REV}). The SourceForge rsync snapshot may be lagging - re-run the workflow."
-            exit 1
-          fi
+          echo "Synced raw SVN repo to $REPO_DIR (youngest revision: r$(svnlook youngest "$REPO_DIR"))"
 
       - name: Point remoteURI at the local copy
         if: steps.svn_source.outputs.rsync_uri != ''

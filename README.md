@@ -10,7 +10,7 @@ The configs folder contains one config file per repo that is being mirrored. Eac
 | Key | Meaning |
 | --- | --- |
 | `svn.remoteURI` | Canonical remote URL of the SVN repository. Used directly by the replicator when no `rsyncURI` is set. |
-| `svn.rsyncURI` | Optional. Read-only rsync source of the raw repository (SourceForge: `svn.code.sf.net::p/PROJECT/REPO`). When set, the workflow rsyncs the raw repo to the runner, verifies it with `svnadmin verify`, checks it is not behind `svn.remoteURI`'s live HEAD, and rewrites `svn.remoteURI` to a `file://` URL before running the replicator. Much faster than pulling every revision over HTTP. |
+| `svn.rsyncURI` | Optional. Read-only rsync source of the raw repository (SourceForge: `svn.code.sf.net::p/PROJECT/REPO`). When set, the workflow rsyncs the raw repo to the runner, verifies it with `svnadmin verify`, and rewrites `svn.remoteURI` to a `file://` URL before running the replicator. Much faster than pulling every revision over HTTP. |
 | `git.remoteUrl` | Target git repository in `owner/repo` form (e.g. `HtoTheB/tcnopen-trdp`). Pushes are skipped while this is empty. |
 
 The remaining keys (`skipRevisions`, folder layout, `keepDeleted*`, working directories, logging) are documented in the comments of the individual config files.
