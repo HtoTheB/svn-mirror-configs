@@ -1,7 +1,7 @@
 # svn-mirror-configs
 This repository contains github actions and config files to automatically mirror a number of public SVN repositories using the [SVN replicator](https://github.com/HtoTheB/svn-replicator) tool.
 
-The workflow runs daily at 06:00 UTC and can also be started manually (manual runs default to no push, for safe testing).
+The workflow runs daily at 02:00 UTC and can also be started manually (manual runs default to no push, for safe testing).
 
 The configs folder contains one config file per repo that is being mirrored. Each config file needs to be listed in the `matrix.config_file` list of `.github/workflows/mirror.yml` to be mirrored.
 

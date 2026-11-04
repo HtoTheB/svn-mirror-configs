@@ -2,9 +2,9 @@ name: Automatically keep selected SVN mirror repos up to date, using the SVN-rep
 
 on:
   schedule:
-    # Runs once a day at 06:00 UTC. Scheduled runs always push (see the push
+    # Runs once a day at 02:00 UTC. Scheduled runs always push (see the push
     # steps below); manual runs only push when the box is ticked.
-    - cron: '0 6 * * *'
+    - cron: '0 2 * * *'
   workflow_dispatch:
     # Defines the input fields for manual execution
     inputs:
