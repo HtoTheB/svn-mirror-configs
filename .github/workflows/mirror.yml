@@ -27,24 +27,31 @@ jobs:
 
     steps:
 
-      - name: Install Subversion and rsync
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y subversion rsync
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: false
-
       - name: Checkout SVN mirroring configs repo # This repo
         uses: actions/checkout@v4
         with:
           path: mirror-configs
+      # The checkout ref and the prepare action ref below must name the
+      # same branch or version of the tool, so the code and its runner
+      # preparation always match.
       - name: Checkout SVN replicator repo
         uses: actions/checkout@v4
         with:
-          repository: HtoTheB/svn-replicator 
+          repository: HtoTheB/svn-replicator
+          ref: main
           path: svn-replicator
+
+      # System packages and uv come from the tool repository, so when the
+      # tool gains new system requirements, only the action there changes.
+      - name: Prepare the runner to run the tool
+        uses: HtoTheB/svn-replicator/.github/actions/prepare@main
+
+      # rsync is a dependency of the workflow, not of the tool (it serves
+      # the rsync fast path), which is why it stays here.
+      - name: Install rsync
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync
 
       - name: Copy specific config to the replicator tool
         run: |
